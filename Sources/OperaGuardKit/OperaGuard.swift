@@ -1,48 +1,75 @@
 import AppKit
 import Darwin
 import Foundation
+import GuardCore
 
-struct BrowserProcess: Codable, Equatable {
-    var pid: pid_t
-    var launchedAt: Date
+public struct BrowserProcess: Codable, Equatable {
+    public var pid: pid_t
+    public var launchedAt: Date
 
-    init?(_ app: NSRunningApplication) {
+    public init?(_ app: NSRunningApplication) {
         guard let launchedAt = app.launchDate else { return nil }
         self.init(pid: app.processIdentifier, launchedAt: launchedAt)
     }
 
-    init(pid: pid_t, launchedAt: Date) {
+    public init(pid: pid_t, launchedAt: Date) {
         self.pid = pid
         self.launchedAt = launchedAt
     }
 }
 
-struct ViewingSession: Codable, Equatable {
-    var browser: BrowserProcess
-    var startedAt: Date
-    var deadline: Date
-    var lastSeenAt: Date
-    var warned = false
-    var stopping = false
+public struct ViewingSession: Codable, Equatable {
+    public var browser: BrowserProcess
+    public var startedAt: Date
+    public var deadline: Date
+    public var lastSeenAt: Date
+    public var warned: Bool
+    public var stopping: Bool
+
+    public init(
+        browser: BrowserProcess,
+        startedAt: Date,
+        deadline: Date,
+        lastSeenAt: Date,
+        warned: Bool = false,
+        stopping: Bool = false
+    ) {
+        self.browser = browser
+        self.startedAt = startedAt
+        self.deadline = deadline
+        self.lastSeenAt = lastSeenAt
+        self.warned = warned
+        self.stopping = stopping
+    }
 }
 
-struct CompletedSession: Codable, Equatable {
-    var startedAt: Date
-    var endedAt: Date
+public struct CompletedSession: Codable, Equatable {
+    public var startedAt: Date
+    public var endedAt: Date
 }
 
-struct GuardState: Codable, Equatable {
-    static let cooldown: TimeInterval = 30 * 60
+public struct GuardState: Codable, Equatable {
+    public static let cooldown: TimeInterval = 30 * 60
 
-    var trackingStartedAt = Date()
-    var active: ViewingSession?
-    var completed: [CompletedSession] = []
+    public var trackingStartedAt: Date
+    public var active: ViewingSession?
+    public var completed: [CompletedSession]
 
-    var unlockAt: Date? {
+    public init(
+        trackingStartedAt: Date = Date(),
+        active: ViewingSession? = nil,
+        completed: [CompletedSession] = []
+    ) {
+        self.trackingStartedAt = trackingStartedAt
+        self.active = active
+        self.completed = completed
+    }
+
+    public var unlockAt: Date? {
         completed.last?.endedAt.addingTimeInterval(Self.cooldown)
     }
 
-    mutating func recordExit(at now: Date, observed: Bool) -> Bool {
+    public mutating func recordExit(at now: Date, observed: Bool) -> Bool {
         guard let session = active else { return false }
         // A missing process after a restart may have quit long before this check.
         let recentlySeen = now.timeIntervalSince(session.lastSeenAt) <= 10
@@ -52,7 +79,10 @@ struct GuardState: Codable, Equatable {
         return session.stopping && now.timeIntervalSince(endedAt) <= 10
     }
 
-    func usage(on now: Date, calendar: Calendar = .autoupdatingCurrent) -> (seconds: Int, opens: Int) {
+    public func usage(
+        on now: Date,
+        calendar: Calendar = .autoupdatingCurrent
+    ) -> (seconds: Int, opens: Int) {
         guard let day = calendar.dateInterval(of: .day, for: now) else { return (0, 0) }
         var elapsed: TimeInterval = 0
         var opens = 0
@@ -69,7 +99,7 @@ struct GuardState: Codable, Equatable {
         return (Int(elapsed), opens)
     }
 
-    func summary(at now: Date) -> String {
+    public func summary(at now: Date) -> String {
         let today = usage(on: now)
         let hours = today.seconds / 3600
         let minutes = today.seconds / 60 % 60
@@ -87,10 +117,14 @@ struct GuardState: Codable, Equatable {
     }
 }
 
-struct StateStore {
-    let directory: URL
+public struct StateStore {
+    public let directory: URL
 
-    func update<Result>(_ operation: (inout GuardState) throws -> Result) throws -> Result {
+    public init(directory: URL) {
+        self.directory = directory
+    }
+
+    public func update<Result>(_ operation: (inout GuardState) throws -> Result) throws -> Result {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true,
                                                 attributes: [.posixPermissions: 0o700])
         let lockPath = directory.appendingPathComponent("state.lock").path
@@ -117,10 +151,16 @@ struct StateStore {
     }
 }
 
-struct OperaGuard {
-    let bundleID: String
-    let bundleURL: URL
-    let store: StateStore
+public struct OperaGuard {
+    public let bundleID: String
+    public let bundleURL: URL
+    public let store: StateStore
+
+    public init(bundleID: String, bundleURL: URL, store: StateStore) {
+        self.bundleID = bundleID
+        self.bundleURL = bundleURL
+        self.store = store
+    }
 
     private enum Effect {
         case warning(minutes: Int)
@@ -128,25 +168,14 @@ struct OperaGuard {
     }
 
     private func browsers() -> [NSRunningApplication] {
-        NSRunningApplication.runningApplications(withBundleIdentifier: bundleID)
-            .filter { !$0.isTerminated }
+        GuardApplications.running(bundleIdentifier: bundleID)
     }
 
     private func run(_ path: String, _ arguments: [String], wait: Bool = false) throws {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: path)
-        process.arguments = arguments
-        if !wait {
-            process.standardOutput = FileHandle.nullDevice
-            process.standardError = FileHandle.nullDevice
-        }
-        try process.run()
-        if wait {
-            process.waitUntilExit()
-            guard process.terminationStatus == 0 else {
-                throw NSError(domain: "The Opera", code: Int(process.terminationStatus),
-                              userInfo: [NSLocalizedDescriptionKey: "系统未能打开 Opera。"])
-            }
+        let status = try GuardProcess.run(path, arguments: arguments, wait: wait)
+        if wait, status != 0 {
+            throw NSError(domain: "The Opera", code: Int(status),
+                          userInfo: [NSLocalizedDescriptionKey: "系统未能打开 Opera。"])
         }
     }
 
@@ -206,7 +235,7 @@ struct OperaGuard {
                       userInfo: [NSLocalizedDescriptionKey: "未能确认 Opera 已打开，请重试。"])
     }
 
-    func check(minutes input: String? = nil, exitedPID: pid_t? = nil) throws -> [String] {
+    public func check(minutes input: String? = nil, exitedPID: pid_t? = nil) throws -> [String] {
         let (response, effect) = try store.update { state -> ([String], Effect?) in
             let now = Date()
             let effect = reconcile(&state, at: now, exitedPID: exitedPID)
@@ -240,11 +269,10 @@ struct OperaGuard {
     }
 
     private func notify(_ message: String) {
-        try? run("/usr/bin/osascript",
-                 ["-e", "display notification \"\(message)\" with title \"Opera 观看守卫\""])
+        postUserNotification(title: "Opera 观看守卫", body: message)
     }
 
-    func monitor() {
+    public func monitor() {
         @Sendable func checkBrowser(exitedPID: pid_t? = nil) {
             do { _ = try check(exitedPID: exitedPID) }
             catch { fputs("The Opera: \(error.localizedDescription)\n", stderr) }

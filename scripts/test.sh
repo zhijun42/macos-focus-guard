@@ -6,14 +6,18 @@ work="$(/usr/bin/mktemp -d "${TMPDIR:-/tmp}/opera-guard-test.XXXXXXXX")"
 trap '/bin/rm -rf "$work"' EXIT
 fixture="$work/Opera Guard Fixture.app"
 identifier="com.zhijun.opera-guard.fixture.$(/usr/bin/uuidgen)"
+scratch="$work/swift-build"
 
 /bin/mkdir -p "$fixture/Contents/MacOS"
-/bin/cp "$repo/Tests/Fixture-Info.plist" "$fixture/Contents/Info.plist"
+/bin/cp "$repo/IntegrationFixtures/OperaGuard/Info.plist" "$fixture/Contents/Info.plist"
 /usr/bin/plutil -replace CFBundleIdentifier -string "$identifier" "$fixture/Contents/Info.plist"
 /usr/bin/swiftc -warnings-as-errors -module-cache-path "$work/module-cache" -O \
-    "$repo/Tests/Fixture.swift" -o "$fixture/Contents/MacOS/fixture"
+    "$repo/IntegrationFixtures/OperaGuard/Fixture.swift" -o "$fixture/Contents/MacOS/fixture"
 /usr/bin/codesign --force --sign - "$fixture"
 
-/usr/bin/swiftc -warnings-as-errors -module-cache-path "$work/module-cache" -O \
-    "$repo/Sources/OperaGuard.swift" "$repo/Tests/main.swift" -o "$work/fixture-test"
-"$work/fixture-test" "$work" "$identifier"
+/usr/bin/xcrun swift test --package-path "$repo" --scratch-path "$scratch"
+/usr/bin/xcrun swift build --package-path "$repo" --scratch-path "$scratch" \
+    --product opera-guard-integration-tests
+bin_dir="$(/usr/bin/xcrun swift build --package-path "$repo" --scratch-path "$scratch" \
+    --show-bin-path)"
+"$bin_dir/opera-guard-integration-tests" "$work" "$identifier"
